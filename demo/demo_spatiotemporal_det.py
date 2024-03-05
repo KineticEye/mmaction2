@@ -109,8 +109,14 @@ def load_label_map(file_path):
         dict: The label map (int -> label name).
     """
     lines = open(file_path).readlines()
-    lines = [x.strip().split(': ') for x in lines]
-    return {int(x[0]): x[1] for x in lines}
+    label_map = {}
+    for line in lines:
+        if line.startswith('  name:'):
+            name = line.split('"')[1]
+        elif line.startswith('  id:') or line.startswith('  label_id:'):
+            class_id = int(line.strip().split(' ')[-1])
+            label_map[class_id] = name
+    return label_map
 
 
 def abbrev(name):
