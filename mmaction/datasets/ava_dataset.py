@@ -1,11 +1,9 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import os
 import os.path as osp
 from collections import defaultdict
 from typing import Callable, List, Optional, Union
 
 import numpy as np
-import pandas as pd
 from mmengine.fileio import exists, list_from_file, load
 from mmengine.logging import MMLogger
 
@@ -121,15 +119,9 @@ class AVADataset(BaseActionDataset):
                  timestamp_end: int = 1800,
                  use_frames: bool = True,
                  fps: int = 30,
-                 fps_file: Optional[str] = None,
                  multilabel: bool = True,
                  **kwargs) -> None:
-        if fps_file is not None:
-            fps_mapping = pd.read_csv(fps_file)
-            self._FPS = self.create_fps_mapping(fps_mapping)
-            self._FPS['default'] = fps
-        else:
-            self._FPS = fps  # Keep this as standard
+        self._FPS = fps  # Keep this as standard
         self.custom_classes = custom_classes
         if custom_classes is not None:
             assert num_classes == len(custom_classes) + 1
@@ -166,12 +158,6 @@ class AVADataset(BaseActionDataset):
             self.proposals = load(self.proposal_file)
         else:
             self.proposals = None
-
-    def create_fps_mapping(self, fps_mapping_df: pd.DataFrame) -> dict:
-        fps_mapping = {}
-        for _, row in fps_mapping_df.iterrows():
-            fps_mapping[row['image_name']] = int(round(row['fps']))
-        return fps_mapping
 
     def parse_img_record(self, img_records: List[dict]) -> tuple:
         """Merge image records of the same entity at the same time.
@@ -222,18 +208,12 @@ class AVADataset(BaseActionDataset):
         entity_ids = np.stack(entity_ids)
         return bboxes, labels, entity_ids
 
-    def _get_num_frames(self, video_id):
-        img_root = self.data_prefix['img']
-        target_dir = osp.join(img_root, video_id)
-        return len(os.listdir(target_dir))
-
     def load_data_list(self) -> List[dict]:
         """Load AVA annotations."""
         exists(self.ann_file)
         data_list = []
         records_dict_by_img = defaultdict(list)
         fin = list_from_file(self.ann_file)
-        shot_info_dict = {}
         for line in fin:
             line_split = line.strip().split(',')
 
@@ -245,21 +225,16 @@ class AVADataset(BaseActionDataset):
 
             video_id = line_split[0]
             timestamp = int(line_split[1])  # count by second or frame.
-            img_key = f'{video_id},{timestamp:05d}'
+            img_key = f'{video_id},{timestamp:04d}'
 
             entity_box = np.array(list(map(float, line_split[2:6])))
             entity_id = int(line_split[7])
             if self.use_frames:
-                # shot_info = (0, (self.timestamp_end - self.timestamp_start) *
-                #              video_fps)
-                # Load shot info based on num files of target folder
-                num_frames = self._get_num_frames(video_id)
-                shot_info = (0, num_frames)
+                shot_info = (0, (self.timestamp_end - self.timestamp_start) *
+                             self._FPS)
             # for video data, automatically get shot info when decoding
             else:
                 shot_info = None
-
-            shot_info_dict[video_id] = shot_info
 
             video_info = dict(
                 video_id=video_id,
@@ -279,15 +254,13 @@ class AVADataset(BaseActionDataset):
             frame_dir = video_id
             if self.data_prefix['img'] is not None:
                 frame_dir = osp.join(self.data_prefix['img'], frame_dir)
-
-            shot_info = shot_info_dict[video_id]
             video_info = dict(
                 frame_dir=frame_dir,
                 video_id=video_id,
                 timestamp=int(timestamp),
                 img_key=img_key,
                 shot_info=shot_info,
-                fps=self._FPS.get(video_id, self._FPS['default']),
+                fps=self._FPS,
                 ann=ann)
             if not self.use_frames:
                 video_info['filename'] = video_info.pop('frame_dir')
@@ -330,7 +303,6 @@ class AVADataset(BaseActionDataset):
 
         if self.proposals is not None:
             if img_key not in self.proposals:
-                raise ValueError(f'{img_key} not in proposals.')
                 data_info['proposals'] = np.array([[0, 0, 1, 1]])
                 data_info['scores'] = np.array([1])
             else:
