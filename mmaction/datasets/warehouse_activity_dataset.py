@@ -7,7 +7,7 @@ is provided "as is," without warranty of any kind.
 import os
 import os.path as osp
 from collections import defaultdict
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -128,6 +128,7 @@ class WarehouseActivityDataset(AVADataset):
                  fps_file: Optional[str] = None,
                  multilabel: bool = True,
                  class_weights: Optional[dict] = None,
+                 augment_labels: Optional[bool] = False,
                  **kwargs) -> None:
         if fps_file is not None:
             fps_mapping = pd.read_csv(fps_file)
@@ -136,6 +137,7 @@ class WarehouseActivityDataset(AVADataset):
         else:
             self._FPS = fps  # Keep this as standard
 
+        self.augment_labels = augment_labels
         self.class_weights = class_weights
         self.per_sample_weights = None
         if class_weights:
@@ -193,6 +195,51 @@ class WarehouseActivityDataset(AVADataset):
         """Convert one hot labels to label."""
         return np.where(one_hot_labels == 1)[1]
 
+    def _duplicate_labels_within_frame(
+        self,
+        bboxes: np.ndarray,
+        labels: np.ndarray,
+        entity_ids: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Each label obj in labels is a list of actions performed
+        by the same person in the same frame.
+        Check if the labels needs to be augmented
+        by finding if there is a rare classes in the label
+        If there are multiple rare classes, we need to
+        find the maximum class weight aka. number of duplications
+
+        Returns:
+            np.ndarray: Augmented bboxes
+            np.ndarray: Augmented labels
+            np.ndarray: Augmented entity_ids
+        """
+        # Augment rare labels by duplicating samples with the same label
+        aug_bboxes, aug_labels, aug_entity_ids = [], [], []
+        for i, label in enumerate(labels):
+            # Add original samples
+            aug_bboxes.append(bboxes[i])
+            aug_labels.append(labels[i])
+            aug_entity_ids.append(entity_ids[i])
+
+            # label is a one-hot vector [0, 0, 1, 1, 0, ...]
+            label_idxs = np.where(label == 1)[0]
+            weights = [self.class_weights[self.custom_classes[int(idx)]] for idx in label_idxs]
+
+            # Each label obj is a list of actions performed
+            # by the same person in the same frame.
+            # Check if the labels needs to be augmented
+            # by finding if there is a rare classes in the label
+            # If there are multiple rare classes, we need to
+            # find the maximum class weight aka. number of duplications
+            duplication_factor = int(max(max(weights), 1))
+
+            # If the class weight is less than 2, we don't need to augment
+            for _ in range(duplication_factor - 1):
+                aug_bboxes.append(bboxes[i])
+                aug_labels.append(labels[i])
+                aug_entity_ids.append(entity_ids[i])
+        return np.array(aug_bboxes), np.array(aug_labels), np.array(aug_entity_ids)
+
     def load_data_list(self) -> List[dict]:
         """Load AVA annotations."""
         exists(self.ann_file)
@@ -240,6 +287,17 @@ class WarehouseActivityDataset(AVADataset):
             video_id, timestamp = img_key.split(',')
             bboxes, labels, entity_ids = self.parse_img_record(
                 records_dict_by_img[img_key])
+
+            if self.augment_labels and self.class_weights:
+                (
+                    aug_bboxes,
+                    aug_labels,
+                    aug_entity_ids,
+                ) = self._duplicate_labels_within_frame(bboxes, labels, entity_ids)
+                bboxes = aug_bboxes
+                labels = aug_labels
+                entity_ids = aug_entity_ids
+
             ann = dict(
                 gt_bboxes=bboxes, gt_labels=labels, entity_ids=entity_ids)
             frame_dir = video_id
