@@ -42,9 +42,6 @@ class WeightedSampler(DefaultSampler):
                     replacement=self.replacement,
                     generator=g,
                 ))
-                with open('indices-weighted-v2-30ep.txt', 'a') as f:
-                    for idx in indices:
-                        f.write(f'{idx}\n')
 
         else:
             indices = torch.arange(len(self.dataset)).tolist()
