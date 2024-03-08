@@ -15,6 +15,7 @@ from mmengine.fileio import exists, list_from_file, load
 
 from mmaction.evaluation import read_labelmap
 from mmaction.registry import DATASETS
+from mmaction.samplers import WeightedSampler
 from mmaction.utils import ConfigType
 from .ava_dataset import AVADataset
 
@@ -126,6 +127,7 @@ class WarehouseActivityDataset(AVADataset):
                  fps: int = 30,
                  fps_file: Optional[str] = None,
                  multilabel: bool = True,
+                 class_weights: Optional[dict] = None,
                  **kwargs) -> None:
         if fps_file is not None:
             fps_mapping = pd.read_csv(fps_file)
@@ -133,6 +135,11 @@ class WarehouseActivityDataset(AVADataset):
             self._FPS['default'] = fps
         else:
             self._FPS = fps  # Keep this as standard
+
+        self.class_weights = class_weights
+        self.per_sample_weights = None
+        if class_weights:
+            self.per_sample_weights = []
 
         self.custom_classes = custom_classes
         if custom_classes is not None:
@@ -177,18 +184,14 @@ class WarehouseActivityDataset(AVADataset):
             fps_mapping[row['image_name']] = int(round(row['fps']))
         return fps_mapping
 
-    def init_per_sample_weights(self, class_weights: List[float]) -> List:
-        """Initialize per sample weights by using the class weights.
-
-        Args:
-            class_weights (List): Weights for each class
-        """
-        pass
-
     def _get_num_frames(self, video_id):
         img_root = self.data_prefix['img']
         target_dir = osp.join(img_root, video_id)
         return len(os.listdir(target_dir))
+
+    def _convert_one_hot_to_label(self, one_hot_labels):
+        """Convert one hot labels to label."""
+        return np.where(one_hot_labels == 1)[1]
 
     def load_data_list(self) -> List[dict]:
         """Load AVA annotations."""
@@ -254,6 +257,25 @@ class WarehouseActivityDataset(AVADataset):
                 ann=ann)
             if not self.use_frames:
                 video_info['filename'] = video_info.pop('frame_dir')
+
+            # each record dict contains labels for all objects in frames
+            # which means it includes multiple labels
+            # The weights are calculated as the sum of the weights of all labels
+            converted_labels = self._convert_one_hot_to_label(labels)
+            original_labels = [self.custom_classes[label] for label in converted_labels]
+            # with open("sampling-weights-weighted.txt", "a") as f:
+            #     f.write(",".join([str(label) for label in original_labels]))
+            #     f.write("\n")
+
+            if self.class_weights:
+                # Also, the labels are the index of the class in the custom_classes list
+                # so we need to map them to the original labels
+                converted_weights = [self.class_weights[self.custom_classes[label]] for label in converted_labels]
+                total_weight = sum(converted_weights)
+                self.per_sample_weights.append(total_weight)
+            else:
+                converted_weights = [1.0] * len(converted_labels)
+                total_weight = len(converted_labels)
             data_list.append(video_info)
 
         return data_list
