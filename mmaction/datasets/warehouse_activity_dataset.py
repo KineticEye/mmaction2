@@ -186,6 +186,10 @@ class WarehouseActivityDataset(AVADataset):
             fps_mapping[row['image_name']] = int(round(row['fps']))
         return fps_mapping
 
+    def _get_frame_id_from_filename(self, filename):
+        """Extract frame id from filename."""
+        return int(osp.splitext(osp.basename(filename))[0].split('_')[-1])
+
     def _get_num_frames(self, video_id):
         img_root = self.data_prefix['img']
         target_dir = osp.join(img_root, video_id)
@@ -240,13 +244,54 @@ class WarehouseActivityDataset(AVADataset):
                 aug_entity_ids.append(entity_ids[i])
         return np.array(aug_bboxes), np.array(aug_labels), np.array(aug_entity_ids)
 
+    def build_shot_info_dict(self) -> dict:
+        """Compute shot info for a video."""
+        exists(self.ann_file)
+        df = pd.read_csv(self.ann_file)
+        try:
+            df.columns = [
+                "video_name",
+                "middle_frame_timestamp",
+                "x1",
+                "y1",
+                "x2",
+                "y2",
+                "class_label",
+                "person_id",
+                "obj_hash",
+                "created_by",
+                "created_at",
+            ]
+        except:
+            df.columns = [
+                "video_name",
+                "middle_frame_timestamp",
+                "x1",
+                "y1",
+                "x2",
+                "y2",
+                "class_label",
+                "person_id",
+            ]
+        img_prefix = self.data_prefix['img']
+        shot_info_dict = {}
+        unique_video_names = df['video_name'].unique()
+        for video_name in unique_video_names:
+            file_list = sorted(os.listdir(osp.join(img_prefix, video_name)))
+            first_file = file_list[0]
+            last_file = file_list[-1]
+            start = self._get_frame_id_from_filename(first_file)
+            end = self._get_frame_id_from_filename(last_file)
+            shot_info_dict[video_name] = (start, end)
+        return shot_info_dict
+
     def load_data_list(self) -> List[dict]:
         """Load AVA annotations."""
         exists(self.ann_file)
         data_list = []
         records_dict_by_img = defaultdict(list)
         fin = list_from_file(self.ann_file)
-        shot_info_dict = {}
+        self.shot_info_dict = self.build_shot_info_dict()
         for line in fin:
             line_split = line.strip().split(',')
 
@@ -263,16 +308,13 @@ class WarehouseActivityDataset(AVADataset):
             entity_box = np.array(list(map(float, line_split[2:6])))
             entity_id = int(line_split[7])
             if self.use_frames:
-                # shot_info = (0, (self.timestamp_end - self.timestamp_start) *
-                #              video_fps)
-                # Load shot info based on num files of target folder
-                num_frames = self._get_num_frames(video_id)
-                shot_info = (0, num_frames)
+                # # Load shot info based on num files of target folder
+                shot_info = self.shot_info_dict[video_id]
             # for video data, automatically get shot info when decoding
             else:
                 shot_info = None
 
-            shot_info_dict[video_id] = shot_info
+            self.shot_info_dict[video_id] = shot_info
 
             video_info = dict(
                 video_id=video_id,
@@ -304,7 +346,7 @@ class WarehouseActivityDataset(AVADataset):
             if self.data_prefix['img'] is not None:
                 frame_dir = osp.join(self.data_prefix['img'], frame_dir)
 
-            shot_info = shot_info_dict[video_id]
+            shot_info = self.shot_info_dict[video_id]
             video_info = dict(
                 frame_dir=frame_dir,
                 video_id=video_id,
